@@ -2,7 +2,11 @@
 <html lang="en">
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">\n    <title>3D Highway Racer with Main Menu</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>3D Highway Racer with Main Menu</title>
+    <link rel="icon" type="image/png" href="icon.png"> 
+    <link rel="shortcut icon" href="favicon.ico">
+    
     <script src="https://cdn.tailwindcss.com"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
 
@@ -1444,7 +1448,7 @@
         }
 
         // Create player car (Veyron) - Use the isPlayer flag to ensure it's the custom mesh
-        gameState.playerCar.mesh = createCarMesh(0x3498db, true); 
+        gameState.playerCar.mesh = createCarMesh(0x00008B, true); 
         // Set player to start in the new middle lane
         gameState.playerCar.lane = Math.floor(LANE_COUNT / 2); 
         gameState.playerCar.mesh.position.set(gameState.playerCar.lanePositions[gameState.playerCar.lane], 0, PLAYER_Z);
