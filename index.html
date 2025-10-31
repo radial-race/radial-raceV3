@@ -1,0 +1,1561 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">\n    <title>3D Highway Racer with Main Menu</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+
+    <style>
+        /* Custom CSS for 3D elements and layout control */
+        body {
+            font-family: 'Inter', sans-serif;
+            margin: 0;
+            padding: 0;
+            overflow: hidden;
+            background-color: #1f2937; /* Dark background */
+        }
+        
+        #game-container {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100vw;
+            height: 100vh;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            z-index: 10;
+        }
+
+        #canvas-3d {
+            /* The canvas will be appended here and set to full screen by JS */
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+        }
+
+        /* Basic styling for the 'pedal' visualizers */
+        .pedal {
+            box-shadow: 0 5px 0 0 #374151; /* Darker shadow for 3D effect */
+            transition: box-shadow 0.1s, transform 0.1s;
+        }
+
+        .pedal.active {
+            box-shadow: 0 2px 0 0 #374151;
+            transform: translateY(3px);
+        }
+
+        /* Custom speed display styling */
+        .speedometer {
+            background: linear-gradient(145deg, #1f2937, #111827);
+            box-shadow: 0 4px 10px rgba(0, 0, 0, 0.5);
+            border: 2px solid #374151;
+        }
+
+        /* Modal styling to ensure it covers everything */
+        .modal-overlay {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background-color: rgba(0, 0, 0, 0.8);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            z-index: 100; /* Highest z-index */
+        }
+        
+        .menu-card {
+            background: linear-gradient(135deg, #2d3748, #1a202c);
+            border: 4px solid #4a5568;
+            box-shadow: 0 10px 30px rgba(0, 0, 0, 0.8);
+            /* --- FIX: Added max height and overflow scroll for responsiveness --- */
+            max-height: 90vh; 
+            overflow-y: auto;
+            /* -------------------------------------------------------------------- */
+        }
+    </style>
+</head>
+<body>
+
+<div id="game-container">
+    <div id="canvas-3d"></div> 
+    
+    <div id="info-panel" class="absolute top-0 left-0 right-0 flex justify-between items-center p-4 text-white bg-gray-900 bg-opacity-80 z-20 shadow-lg hidden">
+        
+        <div id="speed-display" class="speedometer p-3 rounded-xl flex flex-col items-center">
+            <span class="text-xs font-semibold text-gray-400">MPH</span>
+            <span id="speed-value" class="text-3xl font-extrabold text-green-400">0</span>
+        </div>
+        
+        <div class="text-center">
+            <div class="text-2xl font-bold">Score: <span id="score">0</span></div>
+            <div class="text-lg text-gray-400">Level: <span id="level">1</span> (<span id="environment-name">Sunny Meadow</span>)</div>
+        </div>
+
+        <button id="pause-button" class="bg-red-600 hover:bg-red-700 text-white font-bold py-2 px-4 rounded-lg shadow-xl transition duration-150" onclick="togglePause()">PAUSE (Space)</button>
+    </div>
+    
+    <div id="controls-info" class="absolute bottom-24 md:bottom-32 left-1/2 transform -translate-x-1/2 -translate-y-1/2 text-gray-300 text-base md:text-lg text-center p-2 bg-gray-900 bg-opacity-70 rounded-lg z-20 shadow-2xl hidden">
+        <p class="font-semibold">Controls: **Gas:** Up Arrow (or Hold) | **Steer:** Left/Right Arrow</p>
+    </div>
+
+    <div id="pedals-container" class="absolute bottom-5 right-5 flex gap-5 z-20 hidden">
+        <div id="brake-pedal" class="pedal w-20 h-24 bg-gray-600 text-white text-lg font-bold rounded-lg flex items-center justify-center">BRAKE</div> 
+        <div id="gas-pedal" class="pedal w-20 h-24 bg-gray-600 text-white text-lg font-bold rounded-lg flex items-center justify-center">GAS</div>
+    </div>
+</div>
+
+<div id="modal-container"></div>
+
+<script>
+    // --- THREE.JS SETUP & CONFIGURATION ---
+    const CONTAINER = document.getElementById('canvas-3d');
+    let scene, camera, renderer, clock, animationFrameId;
+
+    // --- BASE GAME CONSTANTS ---
+    const LANE_COUNT = 10; 
+    const ROAD_WIDTH = 15; 
+    const CAR_SIZE = { width: (ROAD_WIDTH / LANE_COUNT) * 0.7, height: 0.5, depth: 1.5 };
+    const TRUCK_SIZE = { width: (ROAD_WIDTH / LANE_COUNT) * 0.9, height: 1.0, depth: 3.0 }; // Wider and longer
+    const SPEED_UNIT_TO_MPH = 5.33; 
+    
+    // Fixed road color (Classic Road as requested)
+    const CLASSIC_ROAD_COLOR = 0x222222; 
+    
+    // Physics and Speed constants (ADJUSTED FOR FASTER FEEL AND MORE BUFFER)
+    const BASE_MAX_PLAYER_SPEED = 25.0; 
+    const BASE_IDLE_PLAYER_SPEED = 10.0;  
+    const BASE_TRAFFIC_SPEED = 6.0;    
+    const BASE_ACCELERATION_RATE = 7.0; 
+    const BASE_DECELERATION_RATE = 10.0; 
+    const LEVEL_MULTIPLIER = 1.08; 
+
+    // Depth and Positioning
+    const ROAD_DEPTH = 150; 
+    const PLAYER_Z = 10;    
+    const DESPAWN_Z = 12;   
+    const FAR_Z_SPAWN = -120; // Spawn further out
+    const DETAIL_COUNT = 40; 
+    
+    // Traffic Intensity (ADJUSTED for smoother difficulty ramp)
+    const BASE_SPAWN_INTERVAL = 0.55; 
+    const TRAFFIC_MULTIPLIER = 1.20; 
+    
+    // **ADJUSTED:** Minimum required Z-gap for the longitudinal buffer (3.5 car lengths)
+    const MIN_LONGITUDINAL_GAP = CAR_SIZE.depth * 3.5; 
+    // **ADJUSTED:** Minimum required Z-gap for the lateral buffer (1.2 car lengths)
+    const MIN_LATERAL_GAP = CAR_SIZE.depth * 1.2; 
+    
+    // >> START ADDITION: NPC Lane Change Constants
+    // Minimum Z gap for an NPC to change lanes (relative to other NPCs or player)
+    const NPC_MIN_Z_CHANGE_GAP = MIN_LONGITUDINAL_GAP * 1.2; 
+    // >> END ADDITION
+
+    // --- ENVIRONMENT PRESETS ---
+    const ENVIRONMENTS = [
+        { name: "Sunny Meadow", skyColor: 0x87CEEB, fogNear: 0.4, fogFar: 0.8, grassColor: 0x38761d, foliageType: 'flowers', weather: 'none' }, 
+        { name: "Autumn Dusk", skyColor: 0xcd6133, fogNear: 0.35, fogFar: 0.75, grassColor: 0x996515, foliageType: 'autumn', weather: 'none' }, 
+        { name: "Heavy Rain", skyColor: 0x4d5656, fogNear: 0.15, fogFar: 0.5, grassColor: 0x3d3d3d, foliageType: 'wet', weather: 'rain' },
+        { name: "Blizzard Drive", skyColor: 0xddeeff, fogNear: 0.1, fogFar: 0.4, grassColor: 0x99aaff, foliageType: 'snowy', weather: 'snow' },
+        { name: "Night Ascent", skyColor: 0x1f2937, fogNear: 0.1, fogFar: 0.55, grassColor: 0x000000, foliageType: 'none', weather: 'none' },
+    ];
+
+    // --- GAME STATE ---
+    let gameState = {
+        score: 0,
+        level: 1,
+        playerSpeedUnits: BASE_IDLE_PLAYER_SPEED,
+        isGameOver: false,
+        isPaused: false,
+        isGassing: false,
+        lastTrafficSpawn: 0,
+        traffic: [],
+        backgroundElements: [],
+        weatherParticles: null,
+        currentEnvironmentIndex: 0,
+        keyBindings: {
+            gas: 'ArrowUp',
+            left: 'ArrowLeft',
+            right: 'ArrowRight'
+        },
+        playerCar: {
+            mesh: null,
+            lane: Math.floor(LANE_COUNT / 2), 
+            lanePositions: [], 
+            targetX: 0,
+            currentX: 0,
+            moveSpeed: 12 
+        }
+    };
+    
+    // Dynamic Speed Variables
+    let MAX_PLAYER_SPEED = BASE_MAX_PLAYER_SPEED;
+    let IDLE_PLAYER_SPEED = BASE_IDLE_PLAYER_SPEED;
+    let TRAFFIC_SPEED = BASE_TRAFFIC_SPEED;
+    let ACCELERATION_RATE = BASE_ACCELERATION_RATE;
+    let DECELERATION_RATE = BASE_DECELERATION_RATE;
+
+    // --- UI Elements ---
+    const infoPanelEl = document.getElementById('info-panel');
+    const controlsInfoEl = document.getElementById('controls-info');
+    const pedalsContainerEl = document.getElementById('pedals-container');
+    const gasPedalEl = document.getElementById('gas-pedal');
+    const brakePedalEl = document.getElementById('brake-pedal');
+    const speedValueEl = document.getElementById('speed-value');
+    const environmentNameEl = document.getElementById('environment-name');
+    const modalContainerEl = document.getElementById('modal-container');
+    const pauseButtonEl = document.getElementById('pause-button');
+    const scoreEl = document.getElementById('score');
+    const levelEl = document.getElementById('level');
+
+    // --- UTILITY AND 3D MESH GENERATION ---
+
+    /** Calculates the center X position for each lane. */
+    function calculateLanePositions() {
+        const lanePositions = [];
+        const laneWidth = ROAD_WIDTH / LANE_COUNT;
+        const startX = -ROAD_WIDTH / 2; 
+        for (let i = 0; i < LANE_COUNT; i++) {
+            lanePositions.push(startX + i * laneWidth + laneWidth / 2);
+        }
+        gameState.playerCar.lanePositions = lanePositions;
+    }
+    
+    /** Creates a Bugatti Veyron-like player car mesh. */
+    function createVeyronMesh(color) {
+        const carGroup = new THREE.Group();
+        const primaryColor = color;
+        const secondaryColor = 0xAAAAAA; // Silver/Gray contrast for the Veyron look
+
+        // --- Materials for Realism (High Metalness, Low Roughness for Glossy Finish) ---
+        const primaryMaterial = new THREE.MeshStandardMaterial({ 
+            color: primaryColor, 
+            metalness: 0.9, 
+            roughness: 0.3 
+        });
+        const secondaryMaterial = new THREE.MeshStandardMaterial({ 
+            color: secondaryColor, 
+            metalness: 0.8, 
+            roughness: 0.5 
+        });
+        const windowMaterial = new THREE.MeshPhongMaterial({ color: 0x111111, transparent: true, opacity: 0.8 });
+        const wheelMaterial = new THREE.MeshPhongMaterial({ color: 0x333333 }); 
+        const headlightMaterial = new THREE.MeshBasicMaterial({ color: 0xFFFF55 });
+
+        const width = CAR_SIZE.width * 1.0;
+        const height = CAR_SIZE.height * 0.8; // Lower profile
+        const depth = CAR_SIZE.depth * 1.1; // Slightly longer
+
+        // 1. Main Body (Lower and Sleek)
+        const mainBodyGeometry = new THREE.BoxGeometry(width, height, depth);
+        const mainBody = new THREE.Mesh(mainBodyGeometry, primaryMaterial);
+        mainBody.position.y = height / 2;
+        carGroup.add(mainBody);
+
+        // 2. Cabin/Roof (Secondary Color)
+        const cabinWidth = width * 0.7;
+        const cabinHeight = height * 0.5;
+        const cabinDepth = depth * 0.4;
+        const cabinGeometry = new THREE.BoxGeometry(cabinWidth, cabinHeight, cabinDepth);
+        const cabin = new THREE.Mesh(cabinGeometry, secondaryMaterial);
+        cabin.position.y = height + cabinHeight / 2;
+        cabin.position.z = depth * 0.1;
+        carGroup.add(cabin);
+
+        // 3. Windows (Black Box inside Cabin)
+        const windowGeometry = new THREE.BoxGeometry(cabinWidth * 0.9, cabinHeight * 0.6, cabinDepth * 0.9);
+        const windowMesh = new THREE.Mesh(windowGeometry, windowMaterial);
+        windowMesh.position.copy(cabin.position);
+        windowMesh.position.y += cabinHeight * 0.05; 
+        carGroup.add(windowMesh);
+
+        // 4. Front Grille (Horseshoe Approximation)
+        const grilleWidth = width * 0.25;
+        const grilleHeight = height * 0.5;
+        const grilleDepth = 0.1;
+        const grilleGeometry = new THREE.BoxGeometry(grilleWidth, grilleHeight, grilleDepth);
+        const grille = new THREE.Mesh(grilleGeometry, secondaryMaterial);
+        grille.position.y = grilleHeight / 2 + 0.1;
+        grille.position.z = depth / 2 + grilleDepth / 2;
+        carGroup.add(grille);
+
+        // 5. Headlights (small yellow boxes on the front edges)
+        const headlightSize = 0.05;
+        const headlightGeometry = new THREE.BoxGeometry(headlightSize, headlightSize, headlightSize);
+        
+        // Left Headlight
+        const headlightL = new THREE.Mesh(headlightGeometry, headlightMaterial);
+        headlightL.position.set(width * 0.45, height * 0.7, depth / 2 + 0.01);
+        carGroup.add(headlightL);
+
+        // Right Headlight
+        const headlightR = new THREE.Mesh(headlightGeometry, headlightMaterial);
+        headlightR.position.set(-width * 0.45, height * 0.7, depth / 2 + 0.01);
+        carGroup.add(headlightR);
+
+        // 6. Wheels 
+        const wheelRadius = CAR_SIZE.width * 0.075; 
+        const wheelDepth = 0.1;
+        // Use more segments for a slightly rounder wheel look
+        const wheelGeometry = new THREE.CylinderGeometry(wheelRadius, wheelRadius, wheelDepth, 12); 
+        
+        const wheelPositions = [
+            { x: width * 0.45, z: depth * 0.35 },
+            { x: -width * 0.45, z: depth * 0.35 },
+            { x: width * 0.45, z: -depth * 0.4 },
+            { x: -width * 0.45, z: -depth * 0.4 },
+        ];
+
+        wheelPositions.forEach(pos => {
+            const wheel = new THREE.Mesh(wheelGeometry, wheelMaterial);
+            wheel.rotation.z = Math.PI / 2;
+            wheel.position.set(pos.x, wheelRadius, pos.z);
+            carGroup.add(wheel);
+        });
+
+        carGroup.children.forEach(child => {
+            child.castShadow = true;
+            child.receiveShadow = true;
+        });
+        
+        carGroup.userData.isCar = true;
+        carGroup.userData.carType = 'veyron';
+        carGroup.userData.collisionDepth = depth; 
+        return carGroup;
+    }
+
+
+    /** Creates a generic car mesh (used for player and standard traffic) with body, cabin, and wheels. */
+    function createGenericCarMesh(color) {
+        const carGroup = new THREE.Group();
+        // --- MODIFIED: Improved Standard Material for glossy traffic cars ---
+        const material = new THREE.MeshStandardMaterial({ 
+            color: color, 
+            metalness: 0.6, 
+            roughness: 0.4 // Glossy paint
+        });
+        
+        // Main Body
+        const mainBodyGeometry = new THREE.BoxGeometry(CAR_SIZE.width, CAR_SIZE.height, CAR_SIZE.depth);
+        const mainBody = new THREE.Mesh(mainBodyGeometry, material);
+        mainBody.position.y = CAR_SIZE.height / 2;
+        carGroup.add(mainBody);
+
+        // Cabin
+        const cabinWidth = CAR_SIZE.width * 0.8;
+        const cabinHeight = CAR_SIZE.height * 0.6;
+        const cabinDepth = CAR_SIZE.depth * 0.6;
+        const cabinGeometry = new THREE.BoxGeometry(cabinWidth, cabinHeight, cabinDepth);
+        // Use Phong for a simple window/cabin look
+        const cabinMaterial = new THREE.MeshPhongMaterial({ color: 0x222222, shininess: 50 }); 
+        
+        const cabin = new THREE.Mesh(cabinGeometry, cabinMaterial);
+        cabin.position.y = CAR_SIZE.height + cabinHeight / 2;
+        cabin.position.z = -CAR_SIZE.depth * 0.1;
+        carGroup.add(cabin);
+
+        // Wheels (Simple cylinders)
+        const wheelRadius = CAR_SIZE.width * 0.075; 
+        const wheelDepth = 0.1;
+        // Increased segments for rounder wheels
+        const wheelGeometry = new THREE.CylinderGeometry(wheelRadius, wheelRadius, wheelDepth, 12); 
+        const wheelMaterial = new THREE.MeshPhongMaterial({ color: 0x333333 }); 
+        
+        const wheelPositions = [
+            { x: CAR_SIZE.width * 0.45, z: CAR_SIZE.depth * 0.3 },
+            { x: -CAR_SIZE.width * 0.45, z: CAR_SIZE.depth * 0.3 },
+            { x: CAR_SIZE.width * 0.45, z: -CAR_SIZE.depth * 0.3 },
+            { x: -CAR_SIZE.width * 0.45, z: -CAR_SIZE.depth * 0.3 },
+        ];
+
+        wheelPositions.forEach(pos => {
+            const wheel = new THREE.Mesh(wheelGeometry, wheelMaterial);
+            wheel.rotation.z = Math.PI / 2;
+            wheel.position.set(pos.x, wheelRadius, pos.z);
+            carGroup.add(wheel);
+        });
+        
+        carGroup.children.forEach(child => {
+            child.castShadow = true;
+            child.receiveShadow = true;
+        });
+        carGroup.userData.isCar = true;
+        carGroup.userData.carType = 'generic';
+        carGroup.userData.collisionDepth = CAR_SIZE.depth;
+        return carGroup;
+    }
+
+    /** Creates a truck mesh. */
+    function createTruckMesh(color) {
+        const carGroup = new THREE.Group();
+        // --- MODIFIED: Improved Standard Material for traffic trucks ---
+        const material = new THREE.MeshStandardMaterial({ 
+            color: color, 
+            metalness: 0.4, 
+            roughness: 0.7 // Less glossy, heavy-duty look
+        });
+
+        // Main Body (Box)
+        const mainBodyGeometry = new THREE.BoxGeometry(TRUCK_SIZE.width, TRUCK_SIZE.height, TRUCK_SIZE.depth);
+        const mainBody = new THREE.Mesh(mainBodyGeometry, material);
+        mainBody.position.y = TRUCK_SIZE.height / 2;
+        carGroup.add(mainBody);
+
+        // Cabin (Smaller box on the front)
+        const cabinWidth = TRUCK_SIZE.width * 0.8;
+        const cabinHeight = TRUCK_SIZE.height * 0.6;
+        const cabinDepth = TRUCK_SIZE.depth * 0.25;
+        const cabinGeometry = new THREE.BoxGeometry(cabinWidth, cabinHeight, cabinDepth);
+        const cabinMaterial = new THREE.MeshPhongMaterial({ 
+            color: 0x444444, // Dark cabin
+            shininess: 30 
+        }); 
+        
+        const cabin = new THREE.Mesh(cabinGeometry, cabinMaterial);
+        cabin.position.y = TRUCK_SIZE.height + cabinHeight / 2;
+        cabin.position.z = TRUCK_SIZE.depth * 0.3; // Position at the front
+        carGroup.add(cabin);
+        
+        // Wheels (Adjusted for truck size)
+        const wheelRadius = CAR_SIZE.width * 0.1; 
+        const wheelDepth = 0.15;
+        // Increased segments for rounder wheels
+        const wheelGeometry = new THREE.CylinderGeometry(wheelRadius, wheelRadius, wheelDepth, 12); 
+        const wheelMaterial = new THREE.MeshPhongMaterial({ color: 0x333333 }); 
+        
+        const wheelPositions = [
+            { x: TRUCK_SIZE.width * 0.4, z: TRUCK_SIZE.depth * 0.4 },
+            { x: -TRUCK_SIZE.width * 0.4, z: TRUCK_SIZE.depth * 0.4 },
+            { x: TRUCK_SIZE.width * 0.4, z: -TRUCK_SIZE.depth * 0.4 },
+            { x: -TRUCK_SIZE.width * 0.4, z: -TRUCK_SIZE.depth * 0.4 },
+        ];
+
+        wheelPositions.forEach(pos => {
+            const wheel = new THREE.Mesh(wheelGeometry, wheelMaterial);
+            wheel.rotation.z = Math.PI / 2;
+            wheel.position.set(pos.x, wheelRadius, pos.z);
+            carGroup.add(wheel);
+        });
+
+        carGroup.children.forEach(child => {
+            child.castShadow = true;
+            child.receiveShadow = true;
+        });
+        carGroup.userData.isCar = true;
+        carGroup.userData.carType = 'truck';
+        carGroup.userData.collisionDepth = TRUCK_SIZE.depth; // Set dynamic depth
+        return carGroup;
+    }
+
+    /** Creates a car mesh (randomly selects between types for traffic, or always generic for player). */
+    function createCarMesh(color, isPlayer = false) {
+        if (isPlayer) {
+            // --- MODIFIED: Use the new Veyron mesh for the player ---
+            return createVeyronMesh(0x00008B); // Deep Blue
+        }
+
+        // Randomly choose car type for traffic
+        const carTypes = [createGenericCarMesh, createTruckMesh];
+        const weights = [80, 20]; // 80% generic car, 20% truck
+
+        let totalWeight = 0;
+        for (const weight of weights) { totalWeight += weight; }
+
+        let random = Math.random() * totalWeight;
+        let selectedType = createGenericCarMesh; // Default to generic
+
+        for (let i = 0; i < carTypes.length; i++) {
+            random -= weights[i];
+            if (random < 0) {
+                selectedType = carTypes[i];
+                break;
+            }
+        }
+
+        const mesh = selectedType(color);
+        mesh.userData.isCar = true;
+        return mesh;
+    }
+
+
+    /** Creates a background foliage mesh (tree, flower, or none). */
+    function createBackgroundMesh(style, grassColor) {
+        const detailGroup = new THREE.Group();
+        detailGroup.userData.isBackgroundElement = true;
+        
+        if (style === 'none') {
+            return detailGroup; // Return empty group for "night ascent"
+        }
+
+        const trunkColor = 0x7c4912;
+        let topColor = grassColor; 
+
+        // Simplified flower object (for performance)
+        if (style === 'flowers') {
+            const flowerColor = [0xFFC0CB, 0xFFA07A, 0x90EE90, 0xADD8E6][Math.floor(Math.random() * 4)];
+            const geometry = new THREE.ConeGeometry(0.3, 0.4, 4);
+            const material = new THREE.MeshBasicMaterial({ color: flowerColor });
+            const flower = new THREE.Mesh(geometry, material);
+            flower.position.y = 0.2;
+            detailGroup.add(flower);
+        } else {
+            // Standard/Autumn/Snowy Tree
+            const trunkGeometry = new THREE.CylinderGeometry(0.1, 0.1, 0.6, 8);
+            const trunkMaterial = new THREE.MeshStandardMaterial({ color: trunkColor, roughness: 1 }); 
+            const trunk = new THREE.Mesh(trunkGeometry, trunkMaterial);
+            trunk.position.y = 0.3; 
+            detailGroup.add(trunk);
+
+            let topGeometry, topYPos;
+            if (style === 'snowy' || style === 'wet') {
+                topGeometry = new THREE.ConeGeometry(0.5, 1.5, 8);
+                topYPos = 1.3;
+                topColor = style === 'snowy' ? 0xffffff : grassColor + 0x111111;
+            } else {
+                topGeometry = new THREE.ConeGeometry(0.4, 1.2, 8);
+                topYPos = 1.2;
+                if (style === 'autumn') {
+                    topColor = [0x992d00, 0xcc6600, 0x4d3200][Math.floor(Math.random() * 3)];
+                }
+            }
+
+            const topMaterial = new THREE.MeshStandardMaterial({ color: topColor, metalness: 0, roughness: 0.7 }); 
+            const top = new THREE.Mesh(topGeometry, topMaterial);
+            top.position.y = topYPos; 
+            detailGroup.add(top);
+        }
+
+        detailGroup.children.forEach(child => {
+            child.castShadow = true;
+            child.receiveShadow = true;
+        });
+        detailGroup.userData.isBackgroundElement = true;
+        return detailGroup;
+    }
+
+    /** Creates and adds rain/snow particle systems. */
+    function createWeatherParticleSystem(weatherType) {
+        const particleCount = weatherType === 'rain' ? 2500 : 1800;
+        const geometry = new THREE.BufferGeometry();
+        const positions = [];
+        const rainVolumeWidth = ROAD_WIDTH + 30;
+        const zWrap = ROAD_DEPTH * 0.8;
+
+        for (let i = 0; i < particleCount; i++) {
+            // X: Wide range across the scene
+            positions.push( (Math.random() - 0.5) * rainVolumeWidth ); 
+            // Y: High above the road
+            positions.push( 15 + Math.random() * 10 ); 
+            // Z: Spread out along the road depth
+            positions.push( FAR_Z_SPAWN + Math.random() * zWrap );
+        }
+
+        geometry.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
+
+        let material;
+        if (weatherType === 'rain') {
+            material = new THREE.PointsMaterial({
+                color: 0x99aaff,
+                size: 0.15,
+                transparent: true,
+                opacity: 0.6,
+            });
+        } else if (weatherType === 'snow') {
+            material = new THREE.PointsMaterial({
+                color: 0xffffff,
+                size: 0.35,
+                transparent: true,
+                opacity: 0.8,
+            });
+        }
+
+        gameState.weatherParticles = new THREE.Points(geometry, material);
+        gameState.weatherParticles.position.z = PLAYER_Z;
+        gameState.weatherParticles.userData.isWeather = true;
+        scene.add(gameState.weatherParticles);
+    }
+
+    /** Cleans up weather particle systems. */
+    function cleanupWeather() {
+        if (gameState.weatherParticles) {
+            scene.remove(gameState.weatherParticles);
+            gameState.weatherParticles.geometry?.dispose();
+            gameState.weatherParticles.material?.dispose();
+            gameState.weatherParticles = null;
+        }
+    }
+    
+    // --- SCENE INITIALIZATION ---
+
+    /** Initializes the 3D scene, camera, and renderer. */
+    function initThreeJS() {
+        // Scene setup
+        scene = new THREE.Scene();
+        
+        const initialEnv = ENVIRONMENTS[0];
+        scene.fog = new THREE.Fog(initialEnv.skyColor, ROAD_DEPTH * initialEnv.fogNear, ROAD_DEPTH * initialEnv.fogFar);
+        
+        // >> START MODIFICATION: Revert to Perspective Camera for Chase View
+        const initialWidth = window.innerWidth;
+        const initialHeight = window.innerHeight;
+        const aspect = initialWidth / initialHeight;
+        
+        // Use PerspectiveCamera again
+        camera = new THREE.PerspectiveCamera(
+            75,         // fov (Field of View)
+            aspect,     // aspect ratio
+            0.1,        // near clipping plane
+            ROAD_DEPTH + 50 // far clipping plane
+        );
+
+        // Position it "barely over" and slightly behind the car
+        // Player is at PLAYER_Z (which is 10)
+        // So we set camera Y=4 (low), Z=15 (5 units behind the player)
+        camera.position.set(0, 4, PLAYER_Z + 5); 
+        
+        // Look *forward* from the car's position, slightly down
+        // We look at Y=2, and 10 units *in front* of the player (Z=0)
+        camera.lookAt(0, 2, PLAYER_Z - 10); 
+        // >> END MODIFICATION
+
+        // Renderer setup
+        renderer = new THREE.WebGLRenderer({ antialias: true });
+        renderer.setSize(initialWidth, initialHeight);
+        renderer.shadowMap.enabled = true;
+        renderer.shadowMap.type = THREE.PCFSoftShadowMap; 
+        CONTAINER.appendChild(renderer.domElement);
+
+        window.addEventListener('resize', onWindowResize);
+        clock = new THREE.Clock();
+
+        // Lighting - Enhanced for better contrast and shadows
+        // 1. Hemisphere Light (Soft ambient lighting)
+        const hemisphereLight = new THREE.HemisphereLight(0xffffff, 0x444444, 1.5);
+        scene.add(hemisphereLight);
+
+        // 2. Directional Light (Sun/Headlight effect for shadows)
+        const directionalLight = new THREE.DirectionalLight(0xffffff, 3);
+        directionalLight.position.set(5, 10, 5);
+        directionalLight.castShadow = true;
+        
+        // >> START MODIFICATION: Improve shadow quality (Kept from previous version)
+        directionalLight.shadow.mapSize.width = 2048; 
+        directionalLight.shadow.mapSize.height = 2048;
+        directionalLight.shadow.camera.left = -ROAD_WIDTH * 1.5; 
+        directionalLight.shadow.camera.right = ROAD_WIDTH * 1.5;
+        directionalLight.shadow.camera.top = 20; 
+        directionalLight.shadow.camera.bottom = -20;
+        directionalLight.shadow.camera.near = 1;
+        directionalLight.shadow.camera.far = 40; 
+        // >> END MODIFICATION
+        
+        scene.add(directionalLight);
+    }
+    
+    /** Handles resizing the canvas and camera when the window size changes. */
+    function onWindowResize() {
+        if (!camera || !renderer) return;
+        const newWidth = window.innerWidth;
+        const newHeight = window.innerHeight;
+
+        // >> START MODIFICATION: Update Perspective Camera properties
+        camera.aspect = newWidth / newHeight;
+        // >> END MODIFICATION
+
+        camera.updateProjectionMatrix();
+        renderer.setSize(newWidth, newHeight);
+    }
+    
+    /** Creates the static road and the animated lane markings. */
+    function createRoad() {
+        // 1. Road Surface (Fixed Classic Asphalt Color)
+        const roadGeometry = new THREE.PlaneGeometry(ROAD_WIDTH, ROAD_DEPTH, 1, 150); 
+        const roadMaterial = new THREE.MeshLambertMaterial({ color: CLASSIC_ROAD_COLOR });
+        const roadMesh = new THREE.Mesh(roadGeometry, roadMaterial);
+        roadMesh.rotation.x = -Math.PI / 2; 
+        roadMesh.position.y = 0; 
+        roadMesh.position.z = -ROAD_DEPTH / 2 + PLAYER_Z; 
+        roadMesh.receiveShadow = true;
+        roadMesh.userData.isRoad = true;
+        scene.add(roadMesh);
+        
+        // 2. Lane Lines (White Dashes)
+        const lineMaterial = new THREE.MeshBasicMaterial({ color: 0xffffff });
+        const lineDepth = 1.2; 
+        const lineGap = 1.8; 
+        const totalPattern = lineDepth + lineGap;
+        // Calculate needed number of lines based on depth
+        const numLines = Math.ceil(ROAD_DEPTH / totalPattern) * 2; 
+        
+        for (let i = 1; i < LANE_COUNT; i++) {
+            const xPos = gameState.playerCar.lanePositions[i] - ROAD_WIDTH / LANE_COUNT / 2;
+            
+            const lineGroup = new THREE.Group();
+            lineGroup.userData.isLaneLine = true;
+            
+            for (let j = 0; j < numLines; j++) {
+                const lineGeometry = new THREE.PlaneGeometry(0.15, lineDepth);
+                const lineMesh = new THREE.Mesh(lineGeometry, lineMaterial);
+                
+                lineMesh.rotation.x = -Math.PI / 2;
+                // Offset the starting Z position to ensure wrapping works smoothly
+                lineMesh.position.set(xPos, 0.01, FAR_Z_SPAWN + j * totalPattern); 
+                lineGroup.add(lineMesh);
+            }
+            lineGroup.userData.totalZExtent = numLines * totalPattern;
+            scene.add(lineGroup);
+        }
+
+        // Road Railings (Guardrails)
+        const railingGeometry = new THREE.BoxGeometry(0.15, 0.4, ROAD_DEPTH); 
+        const railingMaterial = new THREE.MeshStandardMaterial({ color: 0xcccccc, metalness: 0.8, roughness: 0.3 }); 
+
+        // 3. Left Railing
+        const leftRailing = new THREE.Mesh(railingGeometry, railingMaterial);
+        leftRailing.position.set(-ROAD_WIDTH / 2 - 0.5, 0.2, -ROAD_DEPTH / 2 + PLAYER_Z);
+        leftRailing.receiveShadow = true;
+        leftRailing.castShadow = true;
+        leftRailing.userData.isRoadDetail = true;
+        scene.add(leftRailing);
+        
+        // 4. Right Railing
+        const rightRailing = new THREE.Mesh(railingGeometry, railingMaterial);
+        rightRailing.position.set(ROAD_WIDTH / 2 + 0.5, 0.2, -ROAD_DEPTH / 2 + PLAYER_Z);
+        rightRailing.receiveShadow = true;
+        rightRailing.castShadow = true;
+        rightRailing.userData.isRoadDetail = true;
+        scene.add(rightRailing);
+    }
+
+    // --- GAME LOGIC FUNCTIONS ---
+
+    /** Applies the speed and traffic multipliers based on the current level. */
+    function scaleGameSpeed() {
+        const speedFactor = Math.pow(LEVEL_MULTIPLIER, gameState.level - 1); 
+
+        MAX_PLAYER_SPEED = BASE_MAX_PLAYER_SPEED * speedFactor;
+        IDLE_PLAYER_SPEED = BASE_IDLE_PLAYER_SPEED * speedFactor;
+        TRAFFIC_SPEED = BASE_TRAFFIC_SPEED * speedFactor;
+        ACCELERATION_RATE = BASE_ACCELERATION_RATE * speedFactor;
+        DECELERATION_RATE = BASE_DECELERATION_RATE * speedFactor;
+        
+        gameState.playerSpeedUnits = Math.max(gameState.playerSpeedUnits, IDLE_PLAYER_SPEED);
+    }
+
+    /** Updates the scene's colors, fog, and light based on the current level/environment. */
+    function updateEnvironment(newLevel) {
+        // 1. Determine environment settings
+        gameState.currentEnvironmentIndex = (newLevel - 1) % ENVIRONMENTS.length;
+        const env = ENVIRONMENTS[gameState.currentEnvironmentIndex];
+
+        // 2. Cleanup weather and background elements
+        cleanupWeather(); 
+        
+        // 3. Apply general scene settings
+        scene.background = new THREE.Color(env.skyColor);
+        scene.fog.color.set(env.skyColor);
+        scene.fog.near = ROAD_DEPTH * env.fogNear;
+        scene.fog.far = ROAD_DEPTH * env.fogFar;
+
+        // 4. Update Background Elements (clear and redraw with new style)
+        createBackgroundElements(env.foliageType, env.grassColor);
+        
+        // 5. Spawn Weather Effects
+        if (env.weather === 'rain' || env.weather === 'snow') {
+            createWeatherParticleSystem(env.weather);
+        }
+
+        // 6. Update UI
+        environmentNameEl.textContent = env.name;
+    }
+
+    /** Creates static background elements (grass/shoulders and wrapping trees/flowers). */
+    let grassMesh;
+    function createBackgroundElements(foliageType, grassColor) {
+        // Remove old elements first
+        for (let i = scene.children.length - 1; i >= 0; i--) {
+            const child = scene.children[i];
+            if (child.userData.isBackgroundElement) { 
+                scene.remove(child);
+                child.geometry?.dispose();
+                child.material?.dispose();
+            }
+        }
+        gameState.backgroundElements = [];
+        
+        // 1. Grass/Ground Plane 
+        const grassGeometry = new THREE.PlaneGeometry(ROAD_WIDTH + 30, ROAD_DEPTH); 
+        const grassMaterial = new THREE.MeshLambertMaterial({ color: grassColor });
+        grassMesh = new THREE.Mesh(grassGeometry, grassMaterial);
+        grassMesh.rotation.x = -Math.PI / 2;
+        grassMesh.position.y = -0.05; 
+        grassMesh.position.z = -ROAD_DEPTH / 2 + PLAYER_Z;
+        grassMesh.receiveShadow = true;
+        grassMesh.userData.isBackgroundElement = true; 
+        scene.add(grassMesh);
+
+        // 2. Foliage (Animated/Wrapping)
+        for (let i = 0; i < DETAIL_COUNT; i++) {
+            const detailGroup = createBackgroundMesh(foliageType, grassColor); 
+            
+            let xPos = ROAD_WIDTH / 2 + 3 + Math.random() * 8;
+            if (Math.random() > 0.5) {
+                xPos = -xPos; 
+            }
+
+            const zPos = FAR_Z_SPAWN + Math.random() * (ROAD_DEPTH + 30); 
+
+            detailGroup.position.set(xPos, 0, zPos);
+            detailGroup.rotation.y = Math.random() * Math.PI * 2;
+            
+            scene.add(detailGroup);
+            gameState.backgroundElements.push(detailGroup);
+        }
+    }
+
+    /** Creates a traffic car and adds it to the scene. */
+    function createTrafficCar(lane) { 
+        const trafficColors = [0xe74c3c, 0xf1c40f, 0x9b59b6, 0x1abc9c, 0xecf0f1, 0x34495e, 0x95a5a6]; 
+        const carColor = trafficColors[Math.floor(Math.random() * trafficColors.length)];
+
+        // Pass false for isPlayer
+        const carMesh = createCarMesh(carColor, false);
+        
+        // Check which size we used to adjust the spawn position correctly
+        const carDepth = carMesh.userData.collisionDepth;
+        
+        carMesh.position.set(
+            gameState.playerCar.lanePositions[lane], 
+            0, 
+            FAR_Z_SPAWN + carDepth / 2 + Math.random() * 20 
+        );
+
+        carMesh.userData.lane = lane; 
+        
+        // >> START ADDITION: Add state for lane changing AI (Kept from previous)
+        carMesh.userData.isChangingLanes = false;
+        carMesh.userData.targetX = carMesh.position.x;
+        // Time before next decision
+        carMesh.userData.lastLaneChangeDecision = 0; 
+        // Decide to change lanes every 3-8 seconds
+        carMesh.userData.timeToNextChange = 3 + Math.random() * 5; 
+        // Slower move speed than player
+        carMesh.userData.moveSpeed = 4 + Math.random() * 4; 
+        // >> END ADDITION
+        
+        scene.add(carMesh);
+        gameState.traffic.push(carMesh);
+    }
+    
+    /** * Checks if spawning a car in a given lane adheres to the minimum separation rules.
+     * Crucially checks for overlapping cars at the far spawn point.
+     * @param {number} laneToSpawn - The lane index we are considering placing a new car.
+     * @returns {boolean} True if it is safe to spawn, false otherwise.
+     */
+    function isSpawnSafe(laneToSpawn) {
+        const currentLane = laneToSpawn;
+        const spawnZ = FAR_Z_SPAWN; 
+        
+        // Find existing traffic that is close to the spawn point
+        const relevantTraffic = gameState.traffic.filter(car => 
+            car.position.z < PLAYER_Z + 10 // Only consider cars that haven't passed the player yet
+        );
+        
+        for (const car of relevantTraffic) {
+            const carZ = car.position.z;
+            // Get the car's collision depth dynamically
+            const carDepth = car.userData.collisionDepth || CAR_SIZE.depth;
+            
+            // 1. Same-Lane Check (Longitudinal Separation)
+            if (car.userData.lane === currentLane) {
+                // Check for immediate overlap (car spawning *inside* existing car)
+                if (Math.abs(carZ - spawnZ) < carDepth * 0.5) {
+                    return false; 
+                }
+                
+                // Check if the car is too close to the front of the spawn point
+                if (carZ - spawnZ < MIN_LONGITUDINAL_GAP && carZ - spawnZ > 0) {
+                    return false; 
+                }
+            }
+            
+            // 2. Adjacent-Lane Check (Lateral Separation)
+            const isAdjacent = Math.abs(car.userData.lane - currentLane) === 1;
+
+            if (isAdjacent) {
+                // Check if the adjacent car is too close longitudinally
+                if (Math.abs(carZ - spawnZ) < MIN_LATERAL_GAP) {
+                    return false;
+                }
+            }
+        }
+        
+        // 3. Playability Check: Ensure a path remains (Don't spawn if all other lanes are blocked near Z=FAR_Z_SPAWN)
+        const blockedLanes = new Set(); 
+        
+        for (const car of relevantTraffic) {
+            // A lane is blocked if a car is within the generous longitudinal gap distance
+            if (Math.abs(car.position.z - spawnZ) < MIN_LONGITUDINAL_GAP * 0.75) { 
+                blockedLanes.add(car.userData.lane);
+            }
+        }
+        
+        // If all lanes are blocked, it's impossible to pass through the spawn zone.
+        if (blockedLanes.size === LANE_COUNT) {
+            return false;
+        }
+
+        return true; 
+    }
+    
+    // >> START ADDITION: NPC Lane Change Safety Check (Kept from previous)
+    /**
+     * Checks if it's safe for an NPC car to move into a target lane.
+     * @param {THREE.Mesh} car - The NPC car that wants to change lanes.
+     * @param {number} targetLane - The lane index the car wants to move to.
+     * @returns {boolean} True if the lane change is safe, false otherwise.
+     */
+    function isNPCSafeToChange(car, targetLane) {
+        const carZ = car.position.z;
+        
+        // 1. Check against other traffic
+        for (const otherCar of gameState.traffic) {
+            if (otherCar === car) continue; // Don't check against self
+
+            // Check cars in the target lane
+            if (otherCar.userData.lane === targetLane) {
+                const zDiff = Math.abs(otherCar.position.z - carZ);
+                // If longitudinally too close, it's not safe
+                if (zDiff < NPC_MIN_Z_CHANGE_GAP) {
+                    return false;
+                }
+            }
+        }
+
+        // 2. Check against the player
+        if (targetLane === gameState.playerCar.lane) {
+            const zDiff = Math.abs(PLAYER_Z - carZ);
+            // If longitudinally too close to the player, it's not safe
+            if (zDiff < NPC_MIN_Z_CHANGE_GAP) {
+                return false;
+            }
+        }
+        
+        return true; // No conflicts found
+    }
+    // >> END ADDITION
+
+
+    /** Moves and wraps all dynamic elements to create the infinite road effect. */
+    function updateMotion(deltaTime) {
+        const playerCar = gameState.playerCar;
+        const { playerSpeedUnits, traffic } = gameState;
+
+        // 1. Update Player Car Speed
+        if (gameState.isGassing) {
+            gameState.playerSpeedUnits = Math.min(MAX_PLAYER_SPEED, playerSpeedUnits + ACCELERATION_RATE * deltaTime);
+            gasPedalEl.classList.add('active', 'bg-green-500');
+            brakePedalEl.classList.remove('active', 'bg-red-500');
+            
+        } else {
+            if (playerSpeedUnits > IDLE_PLAYER_SPEED) {
+                gameState.playerSpeedUnits = Math.max(IDLE_PLAYER_SPEED, playerSpeedUnits - DECELERATION_RATE * deltaTime);
+            }
+            gasPedalEl.classList.remove('active', 'bg-green-500');
+            brakePedalEl.classList.add('active', 'bg-red-500');
+        }
+
+        // 2. Player Car Lane Change (Smooth movement)
+        playerCar.currentX += (playerCar.targetX - playerCar.currentX) * playerCar.moveSpeed * deltaTime;
+        playerCar.mesh.position.x = playerCar.currentX;
+
+        // >> START MODIFICATION: Camera Follow Logic (Chase Cam)
+        // Camera X position matches player's smoothed X position
+        camera.position.x = playerCar.currentX;
+        
+        // The camera needs to look *at* a point in front of the car,
+        // while also matching the car's X position.
+        // We create a "lookAt" target vector.
+        const lookAtTarget = new THREE.Vector3(
+            playerCar.currentX, // Match car's X
+            2,                  // Look slightly down (Y=2)
+            PLAYER_Z - 10       // Look 10 units in front of the player
+        );
+        camera.lookAt(lookAtTarget);
+        // >> END MODIFICATION
+
+        // 3. Motion Calculations
+        const trafficRelativeMoveDistance = (playerSpeedUnits - TRAFFIC_SPEED) * deltaTime;
+        const roadMoveDistance = playerSpeedUnits * deltaTime;
+        
+        // 4. Move and Check Traffic Cars
+        for (let i = traffic.length - 1; i >= 0; i--) {
+            const carMesh = traffic[i];
+            
+            // Z-axis movement
+            carMesh.position.z += trafficRelativeMoveDistance; 
+            
+            // >> START ADDITION: NPC Lane Change AI (Kept from previous)
+            carMesh.userData.lastLaneChangeDecision += deltaTime;
+            
+            // A. Check if it's time to make a decision
+            if (carMesh.userData.lastLaneChangeDecision > carMesh.userData.timeToNextChange && !carMesh.userData.isChangingLanes) {
+                carMesh.userData.lastLaneChangeDecision = 0;
+                carMesh.userData.timeToNextChange = 3 + Math.random() * 5; // Reset timer
+
+                const currentLane = carMesh.userData.lane;
+                const direction = Math.random() > 0.5 ? 1 : -1;
+                let targetLane = currentLane + direction;
+
+                // If at edge, try the other direction
+                if (targetLane < 0 || targetLane >= LANE_COUNT) {
+                    targetLane = currentLane - direction;
+                }
+
+                // If still out of bounds (e.g., single lane road, though not in this game), do nothing
+                if (targetLane >= 0 && targetLane < LANE_COUNT && targetLane !== currentLane) {
+                    // C. Check if the target lane is safe
+                    if (isNPCSafeToChange(carMesh, targetLane)) {
+                        carMesh.userData.isChangingLanes = true;
+                        carMesh.userData.lane = targetLane;
+                        carMesh.userData.targetX = gameState.playerCar.lanePositions[targetLane];
+                    }
+                }
+            }
+
+            // C. Move the car if it's changing lanes
+            if (carMesh.userData.isChangingLanes) {
+                const moveSpeed = carMesh.userData.moveSpeed;
+                carMesh.position.x += (carMesh.userData.targetX - carMesh.position.x) * moveSpeed * deltaTime;
+
+                // Check if it has arrived
+                if (Math.abs(carMesh.userData.targetX - carMesh.position.x) < 0.05) {
+                    carMesh.position.x = carMesh.userData.targetX;
+                    carMesh.userData.isChangingLanes = false;
+                }
+            }
+            // >> END ADDITION
+            
+            // Collision Check (now checks against moving player AND moving NPCs)
+            if (checkCollision(playerCar.mesh, carMesh)) {
+                gameState.isGameOver = true;
+                showGameOverScreen();
+                return;
+            }
+
+            // Despawn Check
+            if (carMesh.position.z > DESPAWN_Z) {
+                scene.remove(carMesh);
+                traffic.splice(i, 1);
+            }
+        }
+
+        // 5. Handle Traffic Spawning 
+        gameState.lastTrafficSpawn += deltaTime;
+        const requiredTime = BASE_SPAWN_INTERVAL / Math.pow(TRAFFIC_MULTIPLIER, gameState.level - 1); 
+
+        if (gameState.lastTrafficSpawn > requiredTime) {
+            let newLane = Math.floor(Math.random() * LANE_COUNT);
+            let attempts = 0;
+            const maxAttempts = LANE_COUNT * 2; 
+
+            // Loop to find a safe lane to spawn in
+            while (!isSpawnSafe(newLane) && attempts < maxAttempts) {
+                newLane = (newLane + 1) % LANE_COUNT; // Cycle to the next lane
+                attempts++;
+            }
+
+            // Only spawn if a safe lane was found within attempts
+            if (isSpawnSafe(newLane)) {
+                createTrafficCar(newLane);
+            }
+            
+            gameState.lastTrafficSpawn = 0; 
+        }
+
+        // 6. Move Lane Lines and Background Elements (Infinite Road Effect)
+        scene.children.forEach(child => {
+            if (child.userData.isLaneLine) {
+                const totalZExtent = child.userData.totalZExtent;
+                child.children.forEach(line => {
+                    line.position.z += roadMoveDistance; 
+                    if (line.position.z > PLAYER_Z + line.geometry.parameters.height) { 
+                        line.position.z -= totalZExtent; 
+                    }
+                });
+            } else if (child.userData.isBackgroundElement && child !== grassMesh) {
+                child.position.z += roadMoveDistance; 
+                if (child.position.z > DESPAWN_Z) {
+                    child.position.z -= ROAD_DEPTH + 30; // Wrap back to the far end
+                }
+            }
+        });
+        
+        // 7. Update Weather Particles
+        updateWeatherParticles(deltaTime);
+    }
+    
+    /** Animates and wraps the rain/snow particles. */
+    function updateWeatherParticles(deltaTime) {
+        if (!gameState.weatherParticles) return;
+
+        const env = ENVIRONMENTS[gameState.currentEnvironmentIndex];
+        const positions = gameState.weatherParticles.geometry.attributes.position.array;
+        const speedFactor = (gameState.playerSpeedUnits * 0.02); 
+        
+        let particleSpeed = 0; 
+        let yOffset = 0;
+        const zWrap = ROAD_DEPTH * 0.8;
+
+        if (env.weather === 'rain') {
+            particleSpeed = 100 * deltaTime + speedFactor; 
+            yOffset = -50 * deltaTime;
+        } else if (env.weather === 'snow') {
+            particleSpeed = 20 * deltaTime + speedFactor; 
+            yOffset = -5 * deltaTime;
+        }
+
+        for (let i = 0; i < positions.length; i += 3) {
+            positions[i + 2] += particleSpeed;
+            positions[i + 1] += yOffset; 
+            
+            // Add slight horizontal drift for effect
+            positions[i] += Math.sin(positions[i + 2] * 0.1 + clock.getElapsedTime() * 0.5) * 0.05 * deltaTime * 60;
+
+            // Wrap Z position
+            if (positions[i + 2] > PLAYER_Z + 5) {
+                positions[i + 2] -= zWrap;
+                positions[i + 1] = 15 + Math.random() * 10;
+            }
+            
+            // Wrap Y position
+            if (positions[i + 1] < 0) {
+                positions[i + 1] = 15 + Math.random() * 10;
+            }
+        }
+
+        gameState.weatherParticles.geometry.attributes.position.needsUpdate = true;
+    }
+
+    /** Checks for collision between player car and traffic car (AABB simple check) */
+    function checkCollision(player, trafficMesh) {
+        const playerZ = PLAYER_Z; 
+        const trafficZ = trafficMesh.position.z;
+        const halfWidth = CAR_SIZE.width / 2;
+        const halfDepth = CAR_SIZE.depth / 2;
+        
+        // Use the car's dynamic collision depth (set in createCarMesh/createTruckMesh)
+        const trafficCollisionDepth = trafficMesh.userData.collisionDepth || CAR_SIZE.depth; 
+        const trafficHalfDepth = trafficCollisionDepth / 2; 
+
+        // 1. X-axis overlap check
+        // >> START MODIFICATION: Use the traffic's current X position for collision (Kept)
+        const playerMinX = player.position.x - halfWidth * 0.9; 
+        const playerMaxX = player.position.x + halfWidth * 0.9;
+        const trafficMinX = trafficMesh.position.x - halfWidth * 0.9; // Use position.x, not lane
+        const trafficMaxX = trafficMesh.position.x + halfWidth * 0.9; // Use position.x, not lane
+        // >> END MODIFICATION
+
+        const xOverlap = Math.max(0, Math.min(playerMaxX, trafficMaxX) - Math.max(playerMinX, trafficMinX));
+
+        if (xOverlap > CAR_SIZE.width * 0.1) {
+            // 2. Z-axis overlap
+            const playerFrontZ = playerZ + halfDepth;
+            const playerBackZ = playerZ - halfDepth;
+            
+            // Use trafficHalfDepth for traffic car
+            const trafficFrontZ = trafficZ + trafficHalfDepth;
+            const trafficBackZ = trafficZ - trafficHalfDepth;
+
+            // Use a slight tolerance to ensure the collision is forgiving but solid
+            if (playerFrontZ > trafficBackZ + 0.1 && playerBackZ < trafficFrontZ - 0.1) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+
+    /** Updates UI elements and checks for level progression. */
+    function updateUI(deltaTime) {
+        const { score, level, playerSpeedUnits } = gameState;
+        
+        // Score update
+        gameState.score += playerSpeedUnits * deltaTime * 10; 
+        scoreEl.textContent = Math.floor(gameState.score);
+        
+        // Speed update
+        speedValueEl.textContent = Math.floor(playerSpeedUnits * SPEED_UNIT_TO_MPH);
+
+        // Level check
+        const newLevel = Math.floor(score / 3500) + 1; // Slightly increased score needed for next level
+        if (newLevel > level) {
+            gameState.level = newLevel;
+            levelEl.textContent = gameState.level;
+            scaleGameSpeed(); 
+            updateEnvironment(gameState.level); 
+        }
+    }
+
+
+    // --- GAME CONTROL FUNCTIONS ---
+    
+    /** Global function to update keybindings from the settings menu. */
+    window.updateKeybinding = function(action, elementId) {
+        const button = document.getElementById(elementId);
+        const originalText = button.textContent;
+        button.textContent = 'Press a key...';
+        
+        const handler = (e) => {
+            const newKey = e.key;
+            
+            // Check for duplicate keys (prevent same key for different actions)
+            for (const key in gameState.keyBindings) {
+                if (key !== action && gameState.keyBindings[key] === newKey) {
+                    alert(`Key '${newKey}' is already used for ${key.toUpperCase()}.`);
+                    button.textContent = originalText; // Revert to current key
+                    document.removeEventListener('keydown', handler);
+                    return;
+                }
+            }
+
+            gameState.keyBindings[action] = newKey;
+            button.textContent = newKey;
+
+            // Update controls info immediately if visible
+            updateControlsInfo(); 
+            
+            document.removeEventListener('keydown', handler);
+        };
+
+        // Temporarily remove focus from the button to ensure keydown is captured on the document
+        button.blur(); 
+        
+        // Remove old listener if any and add new one
+        document.removeEventListener('keydown', handler);
+        document.addEventListener('keydown', handler, { once: true });
+    };
+
+    /** Updates the on-screen controls info with the current keybindings. */
+    function updateControlsInfo() {
+        const gasKey = gameState.keyBindings.gas;
+        const leftKey = gameState.keyBindings.left;
+        const rightKey = gameState.keyBindings.right;
+        
+        const gasDisplay = gasKey === ' ' ? 'Spacebar' : gasKey;
+        const leftDisplay = leftKey === ' ' ? 'Spacebar' : leftKey;
+        const rightDisplay = rightKey === ' ' ? 'Spacebar' : rightKey;
+
+        controlsInfoEl.innerHTML = `<p class="font-semibold">Controls: **Gas:** ${gasDisplay} (or Hold) | **Steer:** ${leftDisplay}/${rightDisplay}</p>`;
+    }
+
+
+    /** Shows the main menu screen. */
+    function showMainMenu() {
+        // Ensure UI elements are hidden
+        infoPanelEl.classList.add('hidden');
+        controlsInfoEl.classList.add('hidden');
+        pedalsContainerEl.classList.add('hidden');
+        
+        // Clear old scene items (if any are left from a crash/restart)
+        for (let i = scene.children.length - 1; i >= 0; i--) {
+            const child = scene.children[i];
+            if (child.userData.isCar || child.userData.isLaneLine || child.userData.isRoad || child.userData.isBackgroundElement || child.userData.isWeather || child.userData.isRoadDetail) {
+                scene.remove(child);
+                child.geometry?.dispose();
+                child.material?.dispose();
+            }
+        }
+
+        modalContainerEl.innerHTML = `
+            <div class="modal-overlay">
+                <div class="menu-card rounded-2xl p-8 md:p-12 text-center text-white w-11/12 md:w-96">
+                    <h1 class="text-6xl font-extrabold mb-4 text-yellow-400 tracking-wider shadow-white">RADIAL RACE</h1>
+                    <p class="text-xl text-gray-300 mb-8">Endless high-speed highway action.</p>
+                    
+                    <div class="space-y-4">
+                        <button onclick="startGame()" class="w-full bg-green-600 hover:bg-green-700 text-white font-bold py-4 rounded-lg shadow-lg transition duration-200 text-xl tracking-wider">
+                            START RACE
+                        </button>
+                        <button onclick="showHowToPlay()" class="w-full bg-blue-600 hover:bg-blue-700 text-white font-bold py-3 rounded-lg shadow-md transition duration-200">
+                            HOW TO PLAY
+                        </button>
+                        <button onclick="showSettingsMenu()" class="w-full bg-purple-600 hover:bg-purple-700 text-white font-bold py-3 rounded-lg shadow-md transition duration-200">
+                            SETTINGS (Keybinds)
+                        </button>
+                        </div>
+                </div>
+            </div>
+        `;
+    }
+
+    /** Shows the instructions modal. */
+    window.showHowToPlay = function() {
+        modalContainerEl.innerHTML = `
+            <div class="modal-overlay">
+                <div class="menu-card rounded-2xl p-8 md:p-12 text-white w-11/12 md:w-1/3">
+                    <h2 class="text-4xl font-extrabold mb-4 text-blue-400 text-center">HOW TO PLAY</h2>
+                    
+                    <div class="flex-shrink-0"> 
+                        <ul class="list-none space-y-4 text-lg text-left">
+                            <li class="p-3 bg-gray-700 rounded-lg">
+                                <span class="font-bold text-green-300">ACCELERATE:</span> Hold the <span class="font-mono bg-gray-800 px-2 py-1 rounded">GAS Key (${gameState.keyBindings.gas})</span> to increase speed. Release to slow down.
+                            </li>
+                            <li class="p-3 bg-gray-700 rounded-lg">
+                                <span class="font-bold text-yellow-300">STEERING:</span> Use <span class="font-mono bg-gray-800 px-2 py-1 rounded">LEFT Key (${gameState.keyBindings.left})</span> / <span class="font-mono bg-gray-800 px-2 py-1 rounded">RIGHT Key (${gameState.keyBindings.right})</span> to switch lanes.
+                            </li>
+                            <li class="p-3 bg-gray-700 rounded-lg">
+                                <span class="font-bold text-red-300">OBJECTIVE:</span> Avoid traffic. Your score is based on distance traveled at speed.
+                            </li>
+                            <li class="p-3 bg-gray-700 rounded-lg">
+                                <span class="font-bold text-indigo-300">PAUSE:</span> Press the <span class="font-mono bg-gray-800 px-2 py-1 rounded">SPACEBAR</span> at any time.
+                            </li>
+                        </ul>
+                    </div>
+
+                    <button onclick="showMainMenu()" class="mt-8 w-full bg-red-600 hover:bg-red-700 text-white font-bold py-3 rounded-lg transition duration-200">BACK TO MENU</button>
+                </div>
+            </div>
+        `;
+    }
+
+    /** Shows the settings menu modal for keybinding customization. */
+    window.showSettingsMenu = function() {
+        modalContainerEl.innerHTML = `
+            <div class="modal-overlay">
+                <div class="menu-card rounded-2xl p-8 md:p-12 text-white w-11/12 md:w-1/3">
+                    <h2 class="text-4xl font-extrabold mb-6 text-purple-400 text-center">GAME SETTINGS</h2>
+                    
+                    <h3 class="text-2xl font-bold mb-4 text-gray-200">Key Bindings</h3>
+
+                    <div class="space-y-4">
+                        <div class="flex justify-between items-center p-3 bg-gray-700 rounded-lg">
+                            <span class="font-bold text-green-300">Gas/Accelerate:</span>
+                            <button id="keybind-gas" onclick="updateKeybinding('gas', 'keybind-gas')" class="bg-gray-900 hover:bg-gray-800 text-yellow-300 font-mono py-2 px-4 rounded transition duration-150 text-base">
+                                ${gameState.keyBindings.gas}
+                            </button>
+                        </div>
+                        <div class="flex justify-between items-center p-3 bg-gray-700 rounded-lg">
+                            <span class="font-bold text-yellow-300">Steer Left:</span>
+                            <button id="keybind-left" onclick="updateKeybinding('left', 'keybind-left')" class="bg-gray-900 hover:bg-gray-800 text-yellow-300 font-mono py-2 px-4 rounded transition duration-150 text-base">
+                                ${gameState.keyBindings.left}
+                            </button>
+                        </div>
+                        <div class="flex justify-between items-center p-3 bg-gray-700 rounded-lg">
+                            <span class="font-bold text-yellow-300">Steer Right:</span>
+                            <button id="keybind-right" onclick="updateKeybinding('right', 'keybind-right')" class="bg-gray-900 hover:bg-gray-800 text-yellow-300 font-mono py-2 px-4 rounded transition duration-150 text-base">
+                                ${gameState.keyBindings.right}
+                            </button>
+                        </div>
+                    </div>
+
+                    <p class="text-sm text-gray-400 mt-4 text-center">Click a button above, then press the key you want to use.</p>
+
+                    <button onclick="showMainMenu()" class="mt-8 w-full bg-red-600 hover:bg-red-700 text-white font-bold py-3 rounded-lg transition duration-200">BACK TO MENU</button>
+                </div>
+            </div>
+        `;
+    }
+
+
+    /** Toggles the game's paused state and shows the modal. */
+    window.togglePause = function() {
+        if (gameState.isGameOver) return; 
+
+        gameState.isPaused = !gameState.isPaused;
+
+        if (gameState.isPaused) {
+            pauseButtonEl.textContent = 'RESUME (Space)';
+            modalContainerEl.innerHTML = `
+                <div class="modal-overlay">
+                    <div class="menu-card rounded-xl p-10 text-center text-white shadow-2xl z-50 w-11/12 md:w-1/3">
+                        <h2 class="text-4xl font-extrabold mb-4 text-yellow-400">GAME PAUSED</h2>
+                        <p class="text-lg mb-6">Take a breath. Press 'RESUME' or the Spacebar to get back on the road.</p>
+                        <button onclick="togglePause()" class="bg-green-600 hover:bg-green-700 text-white font-bold py-3 px-6 rounded-lg transition duration-200">RESUME</button>
+                    </div>
+                </div>
+            `;
+            cancelAnimationFrame(animationFrameId);
+        } else {
+            pauseButtonEl.textContent = 'PAUSE (Space)';
+            modalContainerEl.innerHTML = '';
+            gameLoop();
+        }
+    }
+
+    /** Displays the Game Over modal */
+    function showGameOverScreen() {
+        modalContainerEl.innerHTML = `
+            <div class="modal-overlay">
+                <div class="menu-card bg-red-900 border-2 border-red-500 rounded-xl p-10 text-center text-white shadow-2xl z-50 w-11/12 md:w-1/3">
+                    <h2 class="text-5xl font-extrabold mb-4 text-red-300">CRASH! GAME OVER!</h2>
+                    <p class="text-2xl mb-6">Final Score: <span class="text-yellow-400 font-extrabold">${Math.floor(gameState.score)}</span></p>
+                    <button onclick="showMainMenu()" class="bg-blue-600 hover:bg-blue-700 text-white font-bold py-3 px-6 rounded-lg transition duration-200">BACK TO MENU</button>
+                </div>
+            </div>
+        `;
+        pauseButtonEl.textContent = 'CRASHED';
+        cancelAnimationFrame(animationFrameId);
+        // Hide game UI when game is over
+        infoPanelEl.classList.add('hidden');
+        controlsInfoEl.classList.add('hidden');
+        pedalsContainerEl.classList.add('hidden');
+    }
+    
+    /** Resets the game state and initializes all objects for a new game. */
+    window.startGame = function() {
+        // Clear all scene dynamic items 
+        for (let i = scene.children.length - 1; i >= 0; i--) {
+            const child = scene.children[i];
+            if (child.userData.isCar || child.userData.isLaneLine || child.userData.isRoad || child.userData.isBackgroundElement || child.userData.isWeather || child.userData.isRoadDetail) {
+                scene.remove(child);
+                child.geometry?.dispose();
+                child.material?.dispose();
+            }
+        }
+        
+        // Reset state variables
+        gameState.score = 0;
+        gameState.level = 1;
+        gameState.isGameOver = false;
+        gameState.isPaused = false;
+        gameState.traffic = [];
+        gameState.backgroundElements = [];
+        gameState.lastTrafficSpawn = 0;
+        cleanupWeather(); 
+
+        scaleGameSpeed(); 
+        gameState.playerSpeedUnits = IDLE_PLAYER_SPEED;
+        
+        // Setup lanes if first run
+        if (gameState.playerCar.lanePositions.length === 0) {
+            calculateLanePositions();
+        }
+
+        // Create player car (Veyron) - Use the isPlayer flag to ensure it's the custom mesh
+        gameState.playerCar.mesh = createCarMesh(0x3498db, true); 
+        // Set player to start in the new middle lane
+        gameState.playerCar.lane = Math.floor(LANE_COUNT / 2); 
+        gameState.playerCar.mesh.position.set(gameState.playerCar.lanePositions[gameState.playerCar.lane], 0, PLAYER_Z);
+        gameState.playerCar.targetX = gameState.playerCar.lanePositions[gameState.playerCar.lane];
+        gameState.playerCar.currentX = gameState.playerCar.lanePositions[gameState.playerCar.lane];
+        scene.add(gameState.playerCar.mesh);
+        
+        // >> START MODIFICATION: Reset camera position to player start
+        camera.position.x = gameState.playerCar.currentX;
+        // We also need to reset the Y and Z positions to the default chase cam angle
+        camera.position.y = 4;
+        camera.position.z = PLAYER_Z + 5;
+        
+        // And reset the lookAt target
+        const lookAtTarget = new THREE.Vector3(
+            gameState.playerCar.currentX,
+            2,
+            PLAYER_Z - 10
+        );
+        camera.lookAt(lookAtTarget);
+        // >> END MODIFICATION
+
+        // Rebuild static scene elements
+        createRoad();
+        updateEnvironment(1); 
+        
+        // Update UI visibility
+        infoPanelEl.classList.remove('hidden');
+        // controlsInfoEl.classList.remove('hidden'); // This line was removed in the previous step
+        pedalsContainerEl.classList.remove('hidden');
+        scoreEl.textContent = 0;
+        levelEl.textContent = 1;
+        modalContainerEl.innerHTML = '';
+        pauseButtonEl.textContent = 'PAUSE (Space)';
+        
+        updateControlsInfo(); 
+
+        // Reset pedal visuals
+        gasPedalEl.classList.remove('active', 'bg-green-500');
+        brakePedalEl.classList.add('active', 'bg-red-500'); 
+        
+        clock.start();
+        gameLoop();
+    }
+
+
+    // --- MAIN GAME LOOP ---
+
+    function gameLoop() {
+        if (gameState.isGameOver || gameState.isPaused) {
+            cancelAnimationFrame(animationFrameId);
+            return;
+        }
+        
+        const deltaTime = clock.getDelta(); 
+        
+        // 1. Update all game physics and movement
+        // (This now includes camera movement and NPC AI)
+        updateMotion(deltaTime);
+        
+        // 2. Update all UI displays and check for progression
+        updateUI(deltaTime);
+
+        // 3. Render the 3D scene
+        renderer.render(scene, camera);
+
+        animationFrameId = requestAnimationFrame(gameLoop);
+    }
+
+
+    // --- INPUT HANDLING ---
+
+    document.addEventListener('keydown', (e) => {
+        if (gameState.isGameOver) return;
+        
+        // Spacebar is always pause/resume regardless of keybindings
+        if (e.key === ' ' || e.key === 'Spacebar') {
+            e.preventDefault();
+            togglePause();
+            return;
+        }
+
+        if (gameState.isPaused) return;
+
+        let newLane = gameState.playerCar.lane;
+
+        if (e.key === gameState.keyBindings.left) {
+            newLane = Math.max(0, gameState.playerCar.lane - 1);
+        } else if (e.key === gameState.keyBindings.right) {
+            newLane = Math.min(LANE_COUNT - 1, gameState.playerCar.lane + 1);
+        } else if (e.key === gameState.keyBindings.gas) {
+            gameState.isGassing = true;
+        } else if (e.key === 'ArrowDown') { // Always allow ArrowDown as a universal 'brake' key
+            gameState.isGassing = false; 
+        }
+        
+        if (newLane !== gameState.playerCar.lane) {
+            gameState.playerCar.lane = newLane;
+            gameState.playerCar.targetX = gameState.playerCar.lanePositions[newLane];
+        }
+    });
+    
+    document.addEventListener('keyup', (e) => {
+        if (e.key === gameState.keyBindings.gas) {
+            gameState.isGassing = false;
+        }
+    });
+
+    // --- INITIALIZATION ---
+
+    // Start the game by showing the main menu
+    window.onload = function () {
+        initThreeJS();
+        showMainMenu(); 
+    }
+</script>
+
+</body>
+</html>
